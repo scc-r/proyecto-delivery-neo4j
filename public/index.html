@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rutas de Delivery</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/neovis.js@2.0.2/dist/neovis.js"></script>
+  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+</head>
+<body>
+  <h1>Optimización de Rutas de Delivery</h1>
+
+  <!-- Elimino el botón y div de la visualización tipo mapa -->
+  <div id="viz" style="width: 100%; height: 500px; border:1px solid #ccc; margin: 20px 0;"></div>
+
+  <section>
+    <h2>Ruta Más Rápida</h2>
+    <select id="inicio"></select>
+    <select id="fin"></select>
+    <input type="text" id="bloqueadas" placeholder="Zonas bloqueadas (coma)" />
+    <button onclick="rutaMasRapida()">Buscar Ruta</button>
+    <pre id="resultadoRuta"></pre>
+  </section>
+
+  <section>
+    <h2>Zonas Accesibles</h2>
+    <input type="text" id="centroAcceso" placeholder="CentroDistribucion" />
+    <input type="number" id="maxMin" placeholder="Máx minutos" />
+    <button onclick="zonasAccesibles()">Listar</button>
+    <pre id="resultadoAcceso"></pre>
+  </section>
+
+  <section>
+    <h2>Cierre / Reapertura de Calle</h2>
+    <input type="text" id="origenCalle" placeholder="Origen" />
+    <input type="text" id="destinoCalle" placeholder="Destino" />
+    <button onclick="cerrarCalle()">Cerrar</button>
+    <button onclick="abrirCalle()">Reabrir</button>
+  </section>
+
+  <section>
+    <h2>Actualizar Tráfico</h2>
+    <input type="text" id="origenTr" placeholder="Origen" />
+    <input type="text" id="destinoTr" placeholder="Destino" />
+    <input type="number" id="tiempoTr" placeholder="Minutos" />
+    <input type="text" id="nivelTr" placeholder="Tráfico (bajo/medio/alto)" />
+    <button onclick="actualizarTiempo()">Actualizar</button>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
