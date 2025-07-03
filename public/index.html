@@ -12,21 +12,28 @@
 <body>
   <h1>Optimización de Rutas de Delivery</h1>
 
-  <!-- Elimino el botón y div de la visualización tipo mapa -->
+  <button id="btnVerCompleto" onclick="visualizarGrafo()" style="margin-bottom:10px;">Ver grafo completo</button>
   <div id="viz" style="width: 100%; height: 500px; border:1px solid #ccc; margin: 20px 0;"></div>
 
   <section>
     <h2>Ruta Más Rápida</h2>
     <select id="inicio"></select>
     <select id="fin"></select>
-    <input type="text" id="bloqueadas" placeholder="Zonas bloqueadas (coma)" />
+    <label for="bloqueadas">Zonas bloqueadas:</label>
+    <select id="selectBloqueada">
+      <option value="">--Selecciona zona--</option>
+    </select>
+    <button type="button" onclick="agregarZonaBloqueada()">Agregar</button>
+    <ul id="listaBloqueadas" style="display:inline-block; margin-left:10px;"></ul>
+    <input type="hidden" id="bloqueadas" />
     <button onclick="rutaMasRapida()">Buscar Ruta</button>
     <pre id="resultadoRuta"></pre>
   </section>
 
   <section>
     <h2>Zonas Accesibles</h2>
-    <input type="text" id="centroAcceso" placeholder="CentroDistribucion" />
+    <label for="centroAcceso">Centro de distribución:</label>
+    <select id="centroAcceso"></select>
     <input type="number" id="maxMin" placeholder="Máx minutos" />
     <button onclick="zonasAccesibles()">Listar</button>
     <pre id="resultadoAcceso"></pre>
@@ -47,6 +54,31 @@
     <input type="number" id="tiempoTr" placeholder="Minutos" />
     <input type="text" id="nivelTr" placeholder="Tráfico (bajo/medio/alto)" />
     <button onclick="actualizarTiempo()">Actualizar</button>
+  </section>
+
+  <section>
+    <h2>Calles Congestionadas</h2>
+    <label for="filtroTrafico">Filtrar por tráfico:</label>
+    <select id="filtroTrafico">
+      <option value="">Alto/capacidad&gt;180</option>
+      <option value="alto">Alto</option>
+      <option value="medio">Medio</option>
+      <option value="bajo">Bajo</option>
+    </select>
+    <button onclick="mostrarCallesCongestionadas()">Ver calles congestionadas</button>
+    <pre id="resultadoCongestion"></pre>
+  </section>
+
+  <section>
+    <h2>Conectividad: Zonas Aisladas</h2>
+    <label for="zonaAislada">Zona a bloquear:</label>
+    <select id="zonaAislada"></select>
+    <label for="conexionesBloquear">Conexión a bloquear:</label>
+    <select id="conexionesBloquear" style="min-width:200px;"></select>
+    <button type="button" onclick="agregarConexionBloqueada()">Agregar conexión</button>
+    <ul id="listaConexionesBloqueadas" style="display:inline-block; margin-left:10px;"></ul>
+    <button onclick="consultarZonasAisladas()">Consultar zonas aisladas</button>
+    <pre id="resultadoAisladas"></pre>
   </section>
 
   <script src="app.js"></script>

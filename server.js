@@ -125,40 +125,87 @@ app.post('/api/initialize', async (req, res) => {
 
 
 
-// Endpoint: Ruta más rápida (usando GDS Dijkstra)
+// Endpoint: Ruta más rápida (GDS Dijkstra con proyección en memoria y peso correcto)
 app.post('/api/shortest-path', async (req, res) => {
-  const { inicio, fin, zonasBloqueadas } = req.body;
+  let { inicio, fin, zonasBloqueadas } = req.body;
+  const session = driver.session({ database: 'neo4j' });
+  try {
+    // Limpia zonasBloqueadas: solo strings no vacíos
+    if (!Array.isArray(zonasBloqueadas)) zonasBloqueadas = [];
+    zonasBloqueadas = zonasBloqueadas.map(z => (z || '').trim()).filter(Boolean);
+    console.log('Recibido para shortest-path:', { inicio, fin, zonasBloqueadas });
+    const nodeQuery = 'MATCH (n) WHERE NOT n.nombre IN $zonasBloqueadas RETURN id(n) AS id';
+    const relQuery = `
+      MATCH (n)-[r:CONECTA]->(m)
+      WHERE NOT n.nombre IN $zonasBloqueadas AND NOT m.nombre IN $zonasBloqueadas
+      RETURN id(n) AS source, id(m) AS target, r.tiempo_minutos AS tiempo_minutos
+    `;
 
-  const cypher = `
-    MATCH (start {nombre: $inicio}), (end {nombre: $fin})
-    CALL gds.shortestPath.dijkstra.stream({
-      sourceNode: id(start),
-      targetNode: id(end),
-      relationshipProjection: {
-        CONECTA: {
-          type: 'CONECTA',
-          orientation: 'NATURAL',
-          properties: {
-            tiempo_minutos: {
-              property: 'tiempo_minutos',
-              defaultValue: 1
-            }
-          }
+    // Si ya existe el grafo, bórralo antes de crear uno nuevo
+    try {
+      await session.run(`CALL gds.graph.drop('grafo_delivery', false)`);
+    } catch (e) {
+      // Ignorar si no existe
+    }
+    const projectResult = await session.run(
+      `CALL gds.graph.project.cypher(
+        'grafo_delivery',
+        $nodeQuery,
+        $relQuery,
+        { parameters: { zonasBloqueadas: $zonasBloqueadas } }
+      ) YIELD graphName, nodeCount`,
+      { nodeQuery, relQuery, zonasBloqueadas }
+    );
+    const nodeCount = projectResult.records[0]?.get('nodeCount') || 0;
+    console.log('Nodos proyectados:', nodeCount);
+    if (nodeCount === 0) {
+      await session.run(`CALL gds.graph.drop('grafo_delivery', false)`).catch(() => {});
+      return res.status(400).json({ error: 'No hay nodos válidos para calcular la ruta. Revisa las zonas bloqueadas.' });
+    }
+
+    // 2. Ejecuta Dijkstra usando el peso real
+    const cypher = `
+      MATCH (start {nombre: $inicio}), (end {nombre: $fin})
+      CALL gds.shortestPath.dijkstra.stream('grafo_delivery', {
+        sourceNode: id(start),
+        targetNode: id(end),
+        relationshipWeightProperty: 'tiempo_minutos'
+      })
+      YIELD index, sourceNode, targetNode, totalCost, nodeIds, costs, path
+      WITH [nodeId IN nodeIds | gds.util.asNode(nodeId).nombre] AS nodos_en_ruta, totalCost
+      RETURN nodos_en_ruta AS ruta, totalCost AS tiempo_total
+      LIMIT 1
+    `;
+    const recordsResult = await session.run(cypher, { inicio, fin });
+    const records = recordsResult.records;
+    const result = records.map(r => {
+      const obj = r.toObject();
+      // Forzar conversión de tiempo si es Integer de neo4j
+      if (obj.tiempo_total && typeof obj.tiempo_total.toNumber === 'function') {
+        obj.tiempo_total = obj.tiempo_total.toNumber();
+      } else if (obj.tiempo_total && typeof obj.tiempo_total.low !== 'undefined') {
+        obj.tiempo_total = obj.tiempo_total.low;
+      } else if (typeof obj.tiempo_total === 'object') {
+        if (obj.tiempo_total && obj.tiempo_total.low !== undefined) {
+          obj.tiempo_total = obj.tiempo_total.low;
+        } else {
+          obj.tiempo_total = Number(obj.tiempo_total) || 0;
         }
-      },
-      nodeProjection: '*',
-      relationshipWeightProperty: 'tiempo_minutos'
-    })
-    YIELD index, sourceNode, targetNode, totalCost, nodeIds, costs, path
-    WITH [nodeId IN nodeIds | gds.util.asNode(nodeId).nombre] AS nodos_en_ruta, totalCost
-    WHERE NONE(z IN nodos_en_ruta WHERE z IN $zonasBloqueadas)
-    RETURN nodos_en_ruta AS ruta, totalCost AS tiempo_total
-    LIMIT 1
-  `;
+      }
+      return obj;
+    });
+    console.log('Resultado Dijkstra:', result);
 
-  const records = await runQuery(cypher, { inicio, fin, zonasBloqueadas });
-  const result = records.map(r => r.toObject());
-  res.json(result);
+    // 3. Borra el grafo de memoria
+    await session.run(`CALL gds.graph.drop('grafo_delivery', false)`);
+
+    res.json(result);
+  } catch (e) {
+    console.error('Error en /api/shortest-path:', e);
+    res.status(500).json({ error: e.message });
+  } finally {
+    await session.close();
+  }
 });
 
 // Endpoint: Zonas Directamente Accesibles
@@ -169,12 +216,27 @@ app.get('/api/direct-access', async (req, res) => {
   const cypher = `
     MATCH (c:CentroDistribucion {nombre: $centro})-[r:CONECTA]->(z:Zona)
     WHERE r.tiempo_minutos <= $tiempoMax
-    RETURN z.nombre AS zona, r.tiempo_minutos AS minutos, r.trafico_actual AS trafico
-    ORDER BY minutos ASC;
+    RETURN z.nombre AS zona, r.tiempo_minutos AS tiempo, r.trafico_actual AS trafico
+    ORDER BY tiempo ASC;
   `;
 
   const records = await runQuery(cypher, { centro, tiempoMax });
-  const result = records.map(r => r.toObject());
+  const result = records.map(r => {
+    const obj = r.toObject();
+    // Forzar conversión de tiempo igual que en ruta más rápida
+    if (obj.tiempo && typeof obj.tiempo.toNumber === 'function') {
+      obj.tiempo = obj.tiempo.toNumber();
+    } else if (obj.tiempo && typeof obj.tiempo.low !== 'undefined') {
+      obj.tiempo = obj.tiempo.low;
+    } else if (typeof obj.tiempo === 'object') {
+      if (obj.tiempo && obj.tiempo.low !== undefined) {
+        obj.tiempo = obj.tiempo.low;
+      } else {
+        obj.tiempo = Number(obj.tiempo) || 0;
+      }
+    }
+    return obj;
+  });
   res.json(result);
 });
 
@@ -189,6 +251,52 @@ app.get('/api/congestion', async (req, res) => {
 
   const records = await runQuery(cypher);
   const result = records.map(r => r.toObject());
+  res.json(result);
+});
+
+// Endpoint: Zonas Congestionadas (calles con filtro de tráfico y conversión de tiempo/capacidad)
+app.get('/api/congestionadas', async (req, res) => {
+  const trafico = req.query.trafico;
+  let where = '';
+  if (trafico && ['alto','medio','bajo'].includes(trafico)) {
+    where = `r.trafico_actual = '${trafico}'`;
+  } else {
+    where = `r.trafico_actual = 'alto' OR r.capacidad > 180`;
+  }
+  const cypher = `
+    MATCH (n)-[r:CONECTA]->(m)
+    WHERE ${where}
+    RETURN n.nombre AS origen, m.nombre AS destino, r.tiempo_minutos AS tiempo, r.capacidad AS capacidad, r.trafico_actual AS trafico
+    ORDER BY r.capacidad DESC, r.tiempo_minutos DESC
+  `;
+  const records = await runQuery(cypher);
+  const result = records.map(r => {
+    const obj = r.toObject();
+    // Conversión de tiempo y capacidad igual que en zonas accesibles
+    if (obj.tiempo && typeof obj.tiempo.toNumber === 'function') {
+      obj.tiempo = obj.tiempo.toNumber();
+    } else if (obj.tiempo && typeof obj.tiempo.low !== 'undefined') {
+      obj.tiempo = obj.tiempo.low;
+    } else if (typeof obj.tiempo === 'object') {
+      if (obj.tiempo && obj.tiempo.low !== undefined) {
+        obj.tiempo = obj.tiempo.low;
+      } else {
+        obj.tiempo = Number(obj.tiempo) || 0;
+      }
+    }
+    if (obj.capacidad && typeof obj.capacidad.toNumber === 'function') {
+      obj.capacidad = obj.capacidad.toNumber();
+    } else if (obj.capacidad && typeof obj.capacidad.low !== 'undefined') {
+      obj.capacidad = obj.capacidad.low;
+    } else if (typeof obj.capacidad === 'object') {
+      if (obj.capacidad && obj.capacidad.low !== undefined) {
+        obj.capacidad = obj.capacidad.low;
+      } else {
+        obj.capacidad = Number(obj.capacidad) || 0;
+      }
+    }
+    return obj;
+  });
   res.json(result);
 });
 
@@ -277,6 +385,56 @@ app.get('/api/graph', async (req, res) => {
     res.json({ nodes: Object.values(nodes), edges });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  } finally {
+    await session.close();
+  }
+});
+
+// Endpoint: Zonas aisladas por cierre de zona o conexiones
+app.post('/api/zonas-aisladas', async (req, res) => {
+  let { zonaBloqueada, conexionesBloqueadas } = req.body;
+  // Filtrar conexionesBloqueadas para asegurar solo objetos válidos
+  const conexionesBloqueadasFiltradas = Array.isArray(conexionesBloqueadas)
+    ? conexionesBloqueadas.filter(
+        r => r && r.origen && r.destino && typeof r.origen === 'string' && typeof r.destino === 'string' && r.origen.trim() && r.destino.trim()
+      )
+    : [];
+  const cypher = `
+    WITH $zonaBloqueada AS zonaBloqueada, $conexionesBloqueadas AS conexionesBloqueadas
+    MATCH (z:Zona)
+    WHERE (zonaBloqueada IS NULL OR z.nombre <> zonaBloqueada)
+    WITH COLLECT(z.nombre) AS zonasValidas, zonaBloqueada, (CASE WHEN conexionesBloqueadas IS NULL THEN [] ELSE conexionesBloqueadas END) AS conexionesBloqueadas
+    CALL {
+      WITH conexionesBloqueadas
+      UNWIND conexionesBloqueadas AS rel
+      MATCH (a:Zona {nombre: rel.origen})-[r:CONECTA]->(b:Zona {nombre: rel.destino})
+      RETURN collect(id(r)) AS relsIds
+    }
+    WITH zonasValidas, zonaBloqueada, coalesce(relsIds, []) AS relsIds
+    MATCH (c:CentroDistribucion)
+    CALL apoc.path.subgraphNodes(c, {
+      relationshipFilter: "CONECTA>",
+      labelFilter: "+Zona",
+      maxLevel: 20,
+      blacklistNodes: CASE WHEN zonaBloqueada IS NULL THEN [] ELSE [zonaBloqueada] END,
+      blacklistRels: relsIds,
+      uniqueness: "NODE_GLOBAL"
+    }) YIELD node
+    WHERE node:Zona
+    WITH zonasValidas, COLLECT(DISTINCT node.nombre) AS alcanzadas
+    WITH [z IN zonasValidas WHERE NOT z IN alcanzadas] AS zonasAisladas
+    UNWIND zonasAisladas AS zona_aislada
+    RETURN DISTINCT zona_aislada
+    ORDER BY zona_aislada
+  `;
+  const session = driver.session({ database: 'neo4j' });
+  try {
+    const result = await session.run(cypher, { zonaBloqueada, conexionesBloqueadas: conexionesBloqueadasFiltradas });
+    const zonas = result.records.map(r => r.get('zona_aislada'));
+    res.json(zonas);
+  } catch (e) {
+    console.error('Error en /api/zonas-aisladas:', e);
+    res.status(500).json({ error: e.message, stack: e.stack });
   } finally {
     await session.close();
   }
